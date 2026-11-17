@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10131c">
+  <meta name="description" content="A self-contained, procedural Dragon Balls animation rendered with WebGL2.">
+  <title>Dragon Balls — WebGL2 Animation</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      min-height: 100vh;
+      min-height: 100dvh;
+      display: grid;
+      place-items: center;
+      background: #10131c;
+    }
+    canvas {
+      display: block;
+      width: min(100vw, 100vh);
+      width: min(100vw, 100dvh);
+      height: auto;
+      aspect-ratio: 1;
+    }
+    #error {
+      position: fixed;
+      inset: auto 16px 16px;
+      color: #fff;
+      font: 14px system-ui, sans-serif;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvasgl" width="512" height="512" aria-label="Seven animated Dragon Balls above a grassy landscape"></canvas>
+  <p id="error" role="alert" hidden></p>
+  <noscript>This animation requires JavaScript and WebGL2.</noscript>
+
+  <!-- Procedural WebGL2 raytracer; no textures, models, or external assets. -->
+  <script id="fragRaytrace" type="x-shader/x-fragment">#version 300 es
+	precision highp float;
+	out vec4 FragColor;
+
+	uniform vec2 iResolution;
+	uniform float iTime;
+	uniform vec3 sphereCentre[7];
+
+	const float SPHERE_RADIUS = 0.13;
+
+	float intersectSphere(vec3 ro, vec3 rd, vec3 centre, float radius) {
+		vec3 offset = ro - centre;
+		float b = dot(offset, rd);
+		float c = dot(offset, offset) - radius * radius;
+		float discriminant = b * b - c;
+		if (discriminant < 0.0) {
+			return -1.0;
+		}
+
+		float root = sqrt(discriminant);
+		float t = -b - root;
+		if (t > 0.001) {
+			return t;
+		}
+
+		t = -b + root;
+		return t > 0.001 ? t : -1.0;
+	}
+
+	float intersectPlane(vec3 ro, vec3 rd, float height) {
+		if (abs(rd.y) < 0.0001) {
+			return -1.0;
+		}
+		float t = (height - ro.y) / rd.y;
+		return t > 0.001 ? t : -1.0;
+	}
+
+	bool traceScene(vec3 ro, vec3 rd, out float closest, out int objectIndex) {
+		closest = 1e20;
+		objectIndex = -1;
+
+		for (int i = 0; i < 7; i++) {
+			float t = intersectSphere(ro, rd, sphereCentre[i], SPHERE_RADIUS);
+			if (t > 0.0 && t < closest) {
+				closest = t;
+				objectIndex = i;
+			}
+		}
+
+		float planeHit = intersectPlane(ro, rd, -0.32);
+		if (planeHit > 0.0 && planeHit < closest) {
+			closest = planeHit;
+			objectIndex = 7;
+		}
+
+		return objectIndex >= 0;
+	}
+
+	vec3 surfaceNormal(vec3 point, int objectIndex) {
+		if (objectIndex == 7) {
+			return vec3(0.0, 1.0, 0.0);
+		}
+		return normalize(point - sphereCentre[objectIndex]);
+	}
+
+	// Precomputed five-point star outline avoids trigonometry for every fragment
+	const vec2 STAR_VERTICES[10] = vec2[10](
+		vec2(0.0, 0.2), vec2(-0.037618256, 0.051777088),
+		vec2(-0.190211303, 0.061803399), vec2(-0.060867617, -0.019777088),
+		vec2(-0.117557050, -0.161803399), vec2(0.0, -0.064),
+		vec2(0.117557050, -0.161803399), vec2(0.060867617, -0.019777088),
+		vec2(0.190211303, 0.061803399), vec2(0.037618256, 0.051777088)
+	);
+
+	float starShape(vec2 point) {
+		bool inside = false;
+		for (int i = 0; i < 10; i++) {
+			vec2 a = STAR_VERTICES[i];
+			vec2 b = STAR_VERTICES[(i + 1) % 10];
+			bool crosses = (a.y > point.y) != (b.y > point.y);
+			float xAtCross = (b.x - a.x) * (point.y - a.y) / (b.y - a.y + 0.00001) + a.x;
+			if (crosses && point.x < xAtCross) {
+				inside = !inside;
+			}
+		}
+		return inside ? 1.0 : 0.0;
+	}
+
+	vec2 dragonStarPosition(int starCount, int starIndex) {
+		float spacing = 0.34;
+		if (starCount == 1) {
+			return vec2(0.0);
+		}
+		if (starCount == 2) {
+			return starIndex == 0 ? vec2(-spacing, spacing) : vec2(spacing, -spacing);
+		}
+		if (starCount == 3) {
+			if (starIndex == 0) return vec2(0.0, 0.34);
+			return starIndex == 1 ? vec2(-spacing, -0.22) : vec2(spacing, -0.22);
+		}
+		if (starCount == 4) {
+			float x = starIndex % 2 == 0 ? -spacing : spacing;
+			float y = starIndex < 2 ? spacing : -spacing;
+			return vec2(x, y);
+		}
+		if (starCount == 5 || starCount == 6) {
+			if (starCount == 6 && starIndex == 5) {
+				return vec2(0.0);
+			}
+			float angle = 1.5708 + 6.28318 * float(starIndex) / 5.0;
+			return 0.38 * vec2(cos(angle), sin(angle));
+		}
+		if (starIndex < 2) {
+			return vec2(starIndex == 0 ? -0.28 : 0.28, 0.36);
+		}
+		if (starIndex < 5) {
+			return vec2(float(starIndex - 3) * 0.36, 0.0);
+		}
+		return vec2(starIndex == 5 ? -0.28 : 0.28, -0.36);
+	}
+
+	float dragonStarMask(vec3 normal, int starCount) {
+		float mask = 0.0;
+		for (int i = 0; i < 7; i++) {
+			if (i < starCount) {
+				vec2 position = dragonStarPosition(starCount, i);
+				mask = max(mask, starShape(normal.xy - position));
+			}
+		}
+		return mask;
+	}
+
+	vec3 surfaceColor(vec3 point, int objectIndex) {
+		if (objectIndex == 7) {
+			float broadGrass = 0.5 + 0.5 * sin(point.x * 1.2 + sin(point.z * 0.55));
+			float grassDetail = 0.5 + 0.5 * sin(point.x * 4.5 + point.z * 2.2);
+			float grass = 0.7 * broadGrass + 0.3 * grassDetail;
+			vec3 color = mix(vec3(0.28, 0.58, 0.10), vec3(0.70, 0.88, 0.22), grass);
+			float dirt = smoothstep(0.9, 1.0, 0.5 + 0.5 * sin(point.x * 0.55 + point.z * 0.25 + sin(point.z * 0.4)));
+			return mix(color, vec3(0.74, 0.60, 0.24), dirt * 0.22);
+		}
+		return vec3(0.0); // Only the ground uses this material
+	}
+
+	float ellipseMask(vec2 point, vec2 centre, vec2 radius) {
+		float distance = length((point - centre) / radius);
+		return 1.0 - smoothstep(1.0, 1.08, distance);
+	}
+
+	float capsuleMask(vec2 point, vec2 start, vec2 end, float radius) {
+		vec2 line = end - start;
+		float amount = clamp(dot(point - start, line) / dot(line, line), 0.0, 1.0);
+		float distance = length(point - start - line * amount);
+		return 1.0 - smoothstep(radius, radius + 0.004, distance);
+	}
+
+	vec2 shenronSpine(float amount, float wave) {
+		return vec2(-0.38 + 0.67 * amount, 0.24 + 0.065 * sin(amount * 12.566 - wave));
+	}
+
+	void addShenronFoot(inout float silhouette, vec2 point, vec2 root, vec2 foot) {
+		silhouette = max(silhouette, capsuleMask(point, root, foot, 0.006));
+		silhouette = max(silhouette, capsuleMask(point, foot, foot + vec2(-0.025, -0.018), 0.0025));
+		silhouette = max(silhouette, capsuleMask(point, foot, foot + vec2(0.000, -0.024), 0.0025));
+		silhouette = max(silhouette, capsuleMask(point, foot, foot + vec2(0.025, -0.018), 0.0025));
+	}
+
+	vec3 shenronColor(vec2 point, vec3 skyColor) {
+		float time = iTime * 0.001;
+		float cycle = mod(time * 0.2205, 16.0);
+		bool movingLeft = cycle < 8.0;
+		vec2 dragonCentre = movingLeft
+			? vec2(mix(0.62, -0.62, cycle / 8.0), 0.36)
+			: vec2(mix(-0.62, 0.62, (cycle - 8.0) / 8.0), 0.36);
+
+		vec2 localPoint = (point - dragonCentre) / 0.0926;
+		if (movingLeft) {
+			localPoint.x = -localPoint.x;
+		}
+		if (abs(localPoint.x + 0.04) > 0.55 || abs(localPoint.y) > 0.40) {
+			return skyColor;
+		}
+		point = localPoint + vec2(0.04, 0.24);
+
+		float silhouette = 0.0;
+		float wave = time * 1.47;
+		vec2 previous = shenronSpine(0.0, wave);
+		for (int i = 0; i < 20; i++) {
+			float amount = float(i + 1) / 20.0;
+			vec2 next = shenronSpine(amount, wave);
+			silhouette = max(silhouette, capsuleMask(
+				point, previous, next, mix(0.008, 0.023, amount)
+			));
+			previous = next;
+		}
+
+		vec2 rearRoot = shenronSpine(0.35, wave);
+		addShenronFoot(silhouette, point, rearRoot, rearRoot + vec2(-0.02, -0.07));
+		vec2 frontRoot = shenronSpine(0.72, wave);
+		addShenronFoot(silhouette, point, frontRoot, frontRoot + vec2(0.02, -0.07));
+
+		float headOffset = 0.065 * sin(12.566 - wave);
+		silhouette = max(silhouette, ellipseMask(point, vec2(0.32, 0.24 + headOffset), vec2(0.055, 0.040)));
+		silhouette = max(silhouette, ellipseMask(point, vec2(0.37, 0.225 + headOffset), vec2(0.040, 0.021)));
+		silhouette = max(silhouette, max(
+			capsuleMask(point, vec2(0.30, 0.266 + headOffset), vec2(0.27, 0.315 + headOffset), 0.005),
+			capsuleMask(point, vec2(0.34, 0.265 + headOffset), vec2(0.36, 0.315 + headOffset), 0.005)
+		));
+		silhouette = max(silhouette, max(
+			capsuleMask(point, vec2(0.39, 0.23 + headOffset), vec2(0.46, 0.26 + headOffset), 0.0025),
+			capsuleMask(point, vec2(0.39, 0.22 + headOffset), vec2(0.46, 0.18 + headOffset), 0.0025)
+		));
+
+		return mix(skyColor, vec3(0.01), silhouette);
+	}
+
+	float softCloudEllipse(vec2 point, vec2 centre, vec2 radius) {
+		float distance = length((point - centre) / radius);
+		return 1.0 - smoothstep(0.75, 1.25, distance);
+	}
+
+	float cloudMask(vec2 point, vec2 centre, float scale, int style) {
+		float cloud = 0.0;
+		if (style == 0) {
+			cloud = softCloudEllipse(point, centre, vec2(0.085, 0.028) * scale);
+			cloud = max(cloud, softCloudEllipse(point, centre + vec2(-0.055, 0.008) * scale, vec2(0.050, 0.026) * scale));
+			cloud = max(cloud, softCloudEllipse(point, centre + vec2(0.050, 0.010) * scale, vec2(0.055, 0.030) * scale));
+			cloud = max(cloud, softCloudEllipse(point, centre + vec2(-0.015, 0.028) * scale, vec2(0.045, 0.034) * scale));
+			cloud = max(cloud, softCloudEllipse(point, centre + vec2(0.025, 0.022) * scale, vec2(0.035, 0.028) * scale));
+		} else if (style == 1) {
+			cloud = softCloudEllipse(point, centre, vec2(0.055, 0.022) * scale);
+			cloud = max(cloud, softCloudEllipse(point, centre + vec2(-0.045, 0.004) * scale, vec2(0.040, 0.020) * scale));
+			cloud = max(cloud, softCloudEllipse(point, centre + vec2(0.040, 0.006) * scale, vec2(0.038, 0.022) * scale));
+			cloud = max(cloud, softCloudEllipse(point, centre + vec2(0.000, 0.020) * scale, vec2(0.032, 0.026) * scale));
+		} else {
+			cloud = softCloudEllipse(point, centre, vec2(0.100, 0.030) * scale);
+			cloud = max(cloud, softCloudEllipse(point, centre + vec2(-0.070, 0.005) * scale, vec2(0.055, 0.028) * scale));
+			cloud = max(cloud, softCloudEllipse(point, centre + vec2(0.065, 0.008) * scale, vec2(0.060, 0.032) * scale));
+			cloud = max(cloud, softCloudEllipse(point, centre + vec2(-0.025, 0.030) * scale, vec2(0.050, 0.036) * scale));
+			cloud = max(cloud, softCloudEllipse(point, centre + vec2(0.030, 0.026) * scale, vec2(0.045, 0.030) * scale));
+			cloud = max(cloud, softCloudEllipse(point, centre + vec2(0.000, -0.008) * scale, vec2(0.070, 0.020) * scale));
+		}
+		return cloud;
+	}
+
+	vec3 shadeCloud(vec2 point, vec2 centre, float mask, vec3 skyColor) {
+		float shade = clamp(0.7 + 0.3 * ((point.y - centre.y) * 6.0 + 0.5), 0.7, 1.0);
+		vec3 cloudColor = mix(vec3(0.82, 0.90, 0.98), vec3(0.95, 0.98, 1.0), shade);
+		return mix(skyColor, cloudColor, mask * 0.66);
+	}
+
+	vec3 backgroundColor(vec3 direction) {
+		vec2 point = direction.xy / direction.z;
+		float sky = clamp((point.y + 0.05) / 0.55, 0.0, 1.0);
+		vec3 color = mix(vec3(0.55, 0.86, 1.0), vec3(0.08, 0.42, 0.92), sky);
+
+		float mountainHeight = 0.030 + 0.020 * sin(point.x * 8.0) + 0.012 * sin(point.x * 19.0 + 1.2);
+		color = mix(color, vec3(0.55, 0.72, 0.30), 1.0 - smoothstep(mountainHeight, mountainHeight + 0.005, point.y));
+
+		float farHillHeight = 0.016 + 0.012 * sin(point.x * 14.0) + 0.008 * sin(point.x * 27.0);
+		color = mix(color, vec3(0.48, 0.76, 0.22), 1.0 - smoothstep(farHillHeight, farHillHeight + 0.004, point.y));
+
+		float nearHillHeight = 0.008 + 0.018 * sin(point.x * 10.0 + 1.5) + 0.010 * sin(point.x * 21.0);
+		color = mix(color, vec3(0.40, 0.70, 0.16), 1.0 - smoothstep(nearHillHeight, nearHillHeight + 0.004, point.y));
+
+		if (point.y > 0.20) {
+			color = shenronColor(point, color);
+
+			float drift = iTime * 0.001 * 0.00525;
+			vec2 cloudCentre[4];
+			cloudCentre[0] = vec2(mod(-0.70 - drift + 0.9, 1.8) - 0.9, 0.38);
+			cloudCentre[1] = vec2(mod(-0.25 - drift * 0.85 + 0.9, 1.8) - 0.9, 0.42);
+			cloudCentre[2] = vec2(mod(0.20 - drift * 1.15 + 0.9, 1.8) - 0.9, 0.36);
+			cloudCentre[3] = vec2(mod(0.65 - drift * 0.95 + 0.9, 1.8) - 0.9, 0.40);
+			float cloudScale[4] = float[4](0.95, 0.7, 1.05, 0.85);
+			int cloudStyle[4] = int[4](0, 1, 2, 0);
+			for (int i = 0; i < 4; i++) {
+				color = shadeCloud(point, cloudCentre[i], cloudMask(point, cloudCentre[i], cloudScale[i], cloudStyle[i]), color);
+			}
+		}
+		return color;
+	}
+
+	// Shadow rays only need an any-hit test against the spheres
+	// The ground plane is below both the surfaces and the light
+	float shadowVisibility(vec3 origin, vec3 direction, float maxDistance) {
+		for (int i = 0; i < 7; i++) {
+			float t = intersectSphere(origin, direction, sphereCentre[i], SPHERE_RADIUS);
+			if (t > 0.0 && t < maxDistance) return 0.0;
+		}
+		return 1.0;
+	}
+
+	void sceneLighting(vec3 point, vec3 normal, out float diffuse, out float visibility) {
+		vec3 toLight = vec3(-0.75, 0.85, -0.35) - point;
+		float distanceToLight = length(toLight);
+		vec3 direction = toLight / distanceToLight;
+		diffuse = max(dot(normal, direction), 0.0);
+		visibility = shadowVisibility(point + normal * 0.002, direction, distanceToLight);
+	}
+
+	vec3 shadeDragonBall(vec3 normal, int objectIndex, float visibility) {
+		float facing = max(dot(normal, normalize(vec3(-0.55, 0.75, -0.35))), 0.0);
+		vec3 color = mix(vec3(1.0, 0.36, 0.02), vec3(1.0, 0.68, 0.26), clamp(0.65 + 0.35 * facing, 0.0, 1.0));
+		color = mix(color, vec3(0.98, 0.04, 0.0), dragonStarMask(normal, objectIndex + 1));
+
+		float id = float(objectIndex);
+		vec2 face = normal.xy;
+		vec2 glare1 = vec2(-0.34 + 0.12 * sin(id * 2.3), 0.42 + 0.10 * cos(id * 1.7));
+		vec2 glare2 = vec2(0.02 + 0.14 * cos(id * 1.9), 0.50 + 0.08 * sin(id * 2.6));
+		float size1 = 0.05 + 0.04 * fract(id * 0.37);
+		float size2 = 0.08 + 0.05 * fract(id * 0.53);
+		float blob1 = 1.0 - smoothstep(size1, size1 + 0.05, length(face - glare1));
+		float blob2 = 1.0 - smoothstep(size2, size2 + 0.08, length((face - glare2) / vec2(1.2 + 0.5 * fract(id * 0.29), 0.65 + 0.35 * fract(id * 0.47))));
+		float strength = 0.75 + 0.2 * fract(id * 0.61);
+		float glare = mod(id, 2.0) < 1.0 ? max(blob1, blob2 * 0.85) : max(blob1 * 0.8, blob2);
+		return mix(color, vec3(1.0), glare * strength) * mix(0.82, 1.0, visibility);
+	}
+
+	vec3 shadeLambert(vec3 point, vec3 normal, int objectIndex) {
+		float diffuse;
+		float visibility;
+		sceneLighting(point, normal, diffuse, visibility);
+
+		if (objectIndex == 7) {
+			diffuse = mix(0.9, diffuse, 0.25);
+			if (visibility < 1.0) {
+				visibility = 0.55;
+			}
+			return surfaceColor(point, objectIndex) * (0.7 + 0.3 * diffuse * visibility);
+		}
+		return shadeDragonBall(normal, objectIndex, visibility);
+	}
+
+
+	void cameraRay(vec2 p, out vec3 ro, out vec3 rd) {
+		vec2 cp = p - vec2(0.5, 0.5);
+		vec3 pix = vec3(cp, 0.0);
+		ro = vec3(0.0, 0.0, -1.0);
+		rd = normalize(pix - ro);
+	}
+	
+	void main() {
+		// Generate a camera ray
+		vec2 uv = gl_FragCoord.xy / iResolution.xy;
+		vec3 ro, rd;
+		cameraRay(uv, ro, rd);
+		
+		float closest;
+		int objectIndex;
+		if (traceScene(ro, rd, closest, objectIndex)) {
+			vec3 point = ro + rd * closest;
+			vec3 normal = surfaceNormal(point, objectIndex);
+			FragColor = vec4(shadeLambert(point, normal, objectIndex), 1.0);
+		} else {
+			FragColor = vec4(backgroundColor(rd), 1.0);
+		}
+	}
+</script>
+  <script id="vertQuad" type="x-shader/x-vertex">#version 300 es
+	void main() {
+		vec2 coords[4] = vec2[4]( vec2(-1, -1), vec2(1, -1), vec2(-1, 1), vec2(1, 1) );
+		gl_Position = vec4(coords[gl_VertexID], 0, 1);
+	}
+</script>
+  <script>
+    "use strict";
+
+    const canvas = document.getElementById("canvasgl");
+    const errorElement = document.getElementById("error");
+    const gl = canvas.getContext("webgl2", { alpha: false, antialias: false });
+
+    function showError(message) {
+      errorElement.textContent = message;
+      errorElement.hidden = false;
+      console.error(message);
+    }
+
+    if (!gl) {
+      showError("WebGL2 is unavailable in this browser. Try a current version of Chrome, Firefox, or Safari.");
+    } else {
+      // Compile and link shaders using the native WebGL2 API (no TWGL or CDN)
+      function compileShader(type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          const log = gl.getShaderInfoLog(shader);
+          gl.deleteShader(shader);
+          throw new Error(`Shader compilation failed: ${log}`);
+        }
+        return shader;
+      }
+
+      function createProgram() {
+        const vertex = compileShader(gl.VERTEX_SHADER, document.getElementById("vertQuad").textContent);
+        const fragment = compileShader(gl.FRAGMENT_SHADER, document.getElementById("fragRaytrace").textContent);
+        const program = gl.createProgram();
+        gl.attachShader(program, vertex);
+        gl.attachShader(program, fragment);
+        gl.linkProgram(program);
+        gl.deleteShader(vertex);
+        gl.deleteShader(fragment);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          const log = gl.getProgramInfoLog(program);
+          gl.deleteProgram(program);
+          throw new Error(`Shader linking failed: ${log}`);
+        }
+        return program;
+      }
+
+      try {
+        const program = createProgram();
+        gl.useProgram(program);
+        gl.bindVertexArray(gl.createVertexArray());
+
+        const resolution = gl.getUniformLocation(program, "iResolution");
+        const time = gl.getUniformLocation(program, "iTime");
+        const centres = gl.getUniformLocation(program, "sphereCentre[0]");
+
+        // Animate the seven sphere positions once per frame, not once per pixel
+        const positions = new Float32Array([
+          -0.41, -0.16, 0.50,
+          -0.137, -0.16, 0.50,
+           0.137, -0.16, 0.50,
+           0.41, -0.16, 0.50,
+          -0.28,  0.12, 0.65,
+           0.00,  0.12, 0.65,
+           0.28,  0.12, 0.65
+        ]);
+        const bobSpeeds = [0.63, 0.732, 0.588, 0.69, 0.648, 0.75, 0.552];
+
+        function resize() {
+          // Bound resolution to keep this raytraced scene smooth on high-DPI devices
+          const displaySize = canvas.getBoundingClientRect().width;
+          const size = Math.max(1, Math.min(640, Math.round(displaySize * (window.devicePixelRatio || 1))));
+          if (canvas.width !== size || canvas.height !== size) {
+            canvas.width = size;
+            canvas.height = size;
+          }
+          gl.viewport(0, 0, size, size);
+          gl.uniform2f(resolution, size, size);
+        }
+
+        window.addEventListener("resize", resize);
+        resize();
+
+        let frameId = null;
+
+        function render(timestamp) {
+          frameId = null;
+          if (document.hidden) return;
+
+          const seconds = timestamp * 0.001;
+          for (let i = 0; i < 7; i++) {
+            const baseY = i < 4 ? -0.16 : 0.12;
+            positions[i * 3 + 1] = baseY + 0.012 * Math.sin(seconds * bobSpeeds[i] + i * 2.4);
+          }
+          gl.uniform3fv(centres, positions);
+          gl.uniform1f(time, timestamp); // The shader expects milliseconds
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          frameId = requestAnimationFrame(render);
+        }
+
+        document.addEventListener("visibilitychange", () => {
+          if (!document.hidden && frameId === null) {
+            frameId = requestAnimationFrame(render);
+          }
+        });
+        frameId = requestAnimationFrame(render);
+      } catch (error) {
+        showError(error.message);
+      }
+    }
+  </script>
+</body>
+</html>
