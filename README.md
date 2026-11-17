@@ -1,6 +1,4 @@
 # Dragon Ball Raytracer
-https://github.com/user-attachments/assets/e41bca14-2bd1-47e3-8134-455b9ee34209
-
 A real-time WebGL2 animation of the seven Dragon Balls floating above a grassy landscape, with drifting clouds, distant hills, and a flying Shenron silhouette.
 
 The entire scene is generated procedurally in a GLSL fragment shader. No 3D models, textures, images, or external libraries are used.
